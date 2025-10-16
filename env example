@@ -1,0 +1,32 @@
+# OpenAI
+OPENAI_API_KEY=
+
+# Дубль, надо разобраться где в коде косяк
+OPENAI_ASSISTANT_ID=asst_
+ASSISTANT_ID=asst_
+
+VECTOR_STORE_ID=vs_
+
+# Avito OAuth2 app - аналогично, где-то в коде дубль
+AVITO_CLIENT_ID=
+
+AVITO_CLIENT_SECRET=
+
+AVITO_USER_ID=
+
+AVITO_ACCOUNT_ID=
+
+# Публичный URL вебхука (для --subscribe), напр. адрес ngrok/домен
+WEBHOOK_URL=
+PORT=8081
+
+ROOT_PATH=/Cash-Cross 
+
+# Необязательный секрет проверки (если будете подписывать свои запросы)
+WEBHOOK_SHARED_SECRET=
+
+# Профиль продавца (используется только если ассистент создаётся автоматически)
+SELLER_PROFILE_NAME=
+SELLER_PROFILE_ABOUT=
+SELLER_PROFILE_RULES=
+SELLER_PROFILE_FAQ=

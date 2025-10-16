@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Админка — Avito Assistant</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b1220; --panel:#121a2b; --text:#e8eefc; --muted:#9fb3d9; --accent:#F58220; --bad:#ff6b6b; --good:#22c55e; --border:#1f2a44; }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Arial}
+    .wrap{max-width:1100px;margin:32px auto;padding:0 16px}
+    h1{font-size:20px;margin:0 0 16px} h2{font-size:16px;margin:24px 0 8px;color:var(--muted)}
+    .grid{display:grid;grid-template-columns:1fr;gap:16px}@media(min-width:900px){.grid{grid-template-columns:1.2fr .8fr}}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    textarea,input[type="text"]{width:100%;background:#0f1626;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 12px;outline:0;font-size:14px}
+    textarea{min-height:160px;resize:vertical}
+    button{appearance:none;border:1px solid transparent;background:var(--accent);color:#000;font-weight:600;padding:10px 14px;border-radius:10px;cursor:pointer}
+    button.secondary{background:transparent;border-color:var(--border);color:var(--text)} button:disabled{opacity:.6;cursor:not-allowed}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.muted{color:var(--muted);font-size:12px}
+    .table{width:100%;border-collapse:collapse;font-size:14px;overflow:hidden;border-radius:10px;border:1px solid var(--border)}
+    .table th,.table td{padding:10px 12px;text-align:left}.table thead{background:#0f1626;color:var(--muted)}.table tr+tr td{border-top:1px solid var(--border)}
+    .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px}.tag.good{background:rgba(34,197,94,.15);color:var(--good)}
+    .tag.bad{background:rgba(255,107,107,.15);color:#ff8484}.tag.wait{background:rgba(245,130,32,.15);color:var(--accent)}
+    .toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center}.right{text-align:right}.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+    .hint{font-size:12px;color:var(--muted);margin-top:6px}.error{color:var(--bad);white-space:pre-wrap}.ok{color:var(--good)}
+    @media(max-width:640px){.wrap{margin:16px auto;padding:0 12px}h1{font-size:18px}h2{font-size:15px}
+      .toolbar{flex-wrap:wrap;gap:8px}.toolbar .muted{width:100%;order:2}
+      #filesWrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px}
+      #filesWrap::-webkit-scrollbar{height:8px}#filesWrap::-webkit-scrollbar-thumb{background:var(--border);border-radius:999px}
+      .table{min-width:640px;font-size:13px}.table th,.table td{padding:8px 10px}#filesWrap thead th{position:sticky;top:0;z-index:1;background:#0f1626}
+      .table td:first-child{word-break:break-all}button{padding:9px 12px}
+    }
+    @media(min-width:641px) and (max-width:900px){#filesWrap{overflow-x:auto;-webkit-overflow-scrolling:touch}.table{min-width:700px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="toolbar">
+      <h1>Админка — Avito Assistant</h1>
+      <div class="muted">API base: <span class="mono" id="apiBase"></span></div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Инструкция ассистента</h2>
+        <textarea id="instructions" placeholder="Инструкция ассистента..."></textarea>
+        <div class="row" style="margin-top:10px;">
+          <button id="saveSettingsBtn">Сохранить</button>
+          <span class="hint" id="settingsMsg"></span>
+        </div>
+        <div class="hint" id="profileHint" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="card" id="uploadCard">
+        <h2>Загрузка файлов в базу знаний</h2>
+        <input id="fileInput" type="file" multiple />
+        <div class="row" style="margin-top:10px;">
+          <button id="uploadBtn">Загрузить</button>
+          <span class="hint" id="uploadMsg"></span>
+        </div>
+        <div class="hint" style="margin-top:8px;">
+          Поддерживаются форматы из <a href="https://platform.openai.com/docs/assistants/tools/file-search/supported-files" target="_blank" rel="noreferrer">документации</a>.
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <div class="toolbar">
+        <h2>Файлы в Vector Store</h2>
+        <button class="secondary" id="reloadBtn">Обновить список</button>
+      </div>
+      <div id="filesWrap">
+        <table class="table">
+          <thead><tr><th>Имя файла</th><th class="right">Размер</th><th>Статус</th><th>Создан</th><th></th></tr></thead>
+        <tbody id="filesTbody"><tr><td colspan="5" class="muted">Загрузка...</td></tr></tbody>
+        </table>
+        <div class="hint" id="filesMsg" style="margin-top:8px;"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  // Можно переопределить базу API, установив window.CASHCROSS_API_BASE = 'https://.../Cash-Cross/api/admin'
+  const API = (window.CASHCROSS_API_BASE) ? window.CASHCROSS_API_BASE
+            : (location.origin + "/Cash-Cross/api/admin");
+  document.getElementById('apiBase').textContent = API;
+
+  const $ = (id)=>document.getElementById(id);
+  const fmtBytes = (n)=> n!=null ? new Intl.NumberFormat('ru-RU').format(n) + ' B' : '—';
+  const fmtDate  = (ts)=> ts ? new Date(ts*1000).toLocaleString() : '—';
+
+  let SETTINGS = { instructions:'', vector_store_id:null, assistant_id:null };
+
+  async function jsonFetch(url, opts) {
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(()=>r.statusText)}`);
+    const ct = r.headers.get("content-type")||"";
+    return ct.includes("application/json") ? r.json() : {};
+  }
+
+  // SETTINGS
+  async function loadSettings(){
+    $('settingsMsg').textContent='';
+    try{
+      const s = await jsonFetch(API+'/settings');
+      SETTINGS.instructions    = s.instructions || '';
+      SETTINGS.vector_store_id = s.vector_store_id || s.vectorStoreId || null;
+      SETTINGS.assistant_id    = s.assistant_id || s.assistantId || null;
+
+      $('instructions').value = SETTINGS.instructions;
+      const parts = [];
+      parts.push('Vector Store: ' + (SETTINGS.vector_store_id || 'не настроен'));
+      if (SETTINGS.assistant_id) parts.push('Assistant: ' + SETTINGS.assistant_id);
+      $('profileHint').textContent = parts.join(' · ');
+      $('profileHint').className = 'hint';
+    }catch(e){
+      $('settingsMsg').textContent='Ошибка: '+e.message;
+      $('settingsMsg').className='hint error';
+    }
+  }
+
+  async function saveSettings(){
+    $('settingsMsg').textContent='';
+    try{
+      const instructions = $('instructions').value||'';
+      await jsonFetch(API+'/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({instructions})});
+      $('settingsMsg').textContent='Сохранено';
+      $('settingsMsg').className='hint ok';
+      SETTINGS.instructions = instructions;
+    }catch(e){
+      $('settingsMsg').textContent='Ошибка: '+e.message;
+      $('settingsMsg').className='hint error';
+    }
+  }
+
+  // нормализация + мягкий клиентский фильтр (если бэк вернёт лишнее)
+  function normalizeAndFilter(raw) {
+    const vsId = SETTINGS.vector_store_id;
+    const asId = SETTINGS.assistant_id;
+    const out = [];
+
+    for (const row of (raw||[])) {
+      const id   = row.id || row.file_id || row.vsfile_id || row.sid || '';
+      const name = row.filename || row.name || id;
+      const size = row.bytes ?? row.usage_bytes ?? row.size ?? null;
+      const status = row.status || row.state || 'ready';
+      const created_at = row.created_at || row.createdAt || null;
+
+      const rowVs = row.vector_store_id || row.vectorStoreId || row.store_id || (row.store && row.store.id) || row.vs_id || null;
+      const meta  = row.metadata || {};
+      const rowAs = row.assistant_id || meta.assistant_id || null;
+
+      if (vsId && rowVs && String(rowVs) !== String(vsId)) continue;
+      if (vsId && !rowVs && asId && rowAs && String(rowAs) !== String(asId)) continue;
+
+      out.push({id, name, size, status, created_at});
+    }
+    return out;
+  }
+
+  // FILES
+  async function loadFiles(){
+    $('filesMsg').textContent='';
+    const tbody=$('filesTbody'); 
+    tbody.innerHTML='<tr><td colspan="5" class="muted">Загрузка...</td></tr>';
+    try{
+      const url = SETTINGS.vector_store_id ? (API + '/files?store=' + encodeURIComponent(SETTINGS.vector_store_id))
+                                           : (API + '/files');
+      const data = await jsonFetch(url);
+      const raw  = Array.isArray(data.data) ? data.data : (Array.isArray(data.files) ? data.files : []);
+      const rows = normalizeAndFilter(raw);
+
+      if(!rows.length){
+        tbody.innerHTML='<tr><td colspan="5" class="muted">Пока файлов нет</td></tr>';
+        return;
+      }
+      tbody.innerHTML='';
+      for(const row of rows){
+        const tr=document.createElement('tr');
+        tr.innerHTML = `
+          <td>${row.name}</td>
+          <td class="right">${fmtBytes(row.size)}</td>
+          <td><span class="tag ${row.status==='completed'||row.status==='ready'?'good':(row.status==='failed'?'bad':'wait')}">${row.status}</span></td>
+          <td>${fmtDate(row.created_at)}</td>
+          <td class="right"><button class="secondary">Удалить</button></td>`;
+        tr.querySelector('button').onclick = async ()=>{
+          if(!confirm('Удалить файл "'+row.name+'"?')) return;
+          try{
+            const id = encodeURIComponent(row.id);
+            await jsonFetch(API+'/files/'+id,{method:'DELETE'});
+            await loadFiles();
+          }catch(e){
+            $('filesMsg').textContent='Ошибка удаления: '+e.message;
+            $('filesMsg').className='hint error';
+          }
+        };
+        tbody.appendChild(tr);
+      }
+    }catch(e){
+      $('filesMsg').textContent='Ошибка загрузки: '+e.message;
+      $('filesMsg').className='hint error';
+    }
+  }
+
+  // UPLOAD
+  async function uploadFiles(){
+    $('uploadMsg').textContent='';
+    const input=$('fileInput');
+    if(!input.files||!input.files.length){
+      $('uploadMsg').textContent='Выберите файлы'; $('uploadMsg').className='hint error'; return;
+    }
+    const fd=new FormData(); for(const f of input.files) fd.append('files',f,f.name);
+    try{
+      const url = SETTINGS.vector_store_id ? (API + '/files?store=' + encodeURIComponent(SETTINGS.vector_store_id))
+                                           : (API + '/files');
+      const r = await fetch(url,{method:'POST',body:fd});
+      if(!r.ok) throw new Error(`${r.status} ${await r.text().catch(()=>r.statusText)}`);
+      $('uploadMsg').textContent='Файлы отправлены. Обновляю список…'; $('uploadMsg').className='hint ok';
+      input.value=''; setTimeout(loadFiles,600);
+    }catch(e){
+      $('uploadMsg').textContent='Ошибка: '+e.message; $('uploadMsg').className='hint error';
+    }
+  }
+
+  $('saveSettingsBtn').onclick=saveSettings;
+  $('uploadBtn').onclick=uploadFiles;
+  $('reloadBtn').onclick=loadFiles;
+
+  (async ()=>{ await loadSettings(); await loadFiles(); })();
+})();
+</script>
+</body>
+</html>
