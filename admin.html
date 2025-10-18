@@ -65,6 +65,15 @@
     </div>
 
     <div class="card" style="margin-top:16px;">
+      <h2>Диалоги Авито</h2>
+      <div class="hint" style="margin-bottom:12px;">Скачайте все сообщения аккаунта в формате .txt для архивирования или анализа.</div>
+      <div class="row">
+        <button id="downloadDialogsBtn">Скачать .txt</button>
+        <span class="hint" id="downloadMsg"></span>
+      </div>
+    </div>
+    
+    <div class="card" style="margin-top:16px;">
       <div class="toolbar">
         <h2>Файлы в Vector Store</h2>
         <button class="secondary" id="reloadBtn">Обновить список</button>
@@ -223,9 +232,42 @@
     }
   }
 
+  async function downloadDialogs(){
+    const msg = $('downloadMsg');
+    msg.textContent='';
+    msg.className='hint';
+    try{
+      const r = await fetch(API+'/dialogs.txt');
+      if(!r.ok){
+        let detail = await r.text().catch(()=>r.statusText);
+        try{
+          const parsed = JSON.parse(detail);
+          if(parsed.detail) detail = parsed.detail;
+        }catch(_){/* ignore */}
+        throw new Error(detail || r.statusText || 'Ошибка запроса');
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const ts = new Date().toISOString().replace(/[:T]/g,'-').split('.')[0];
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `avito-dialogs-${ts}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      msg.textContent='Файл сформирован';
+      msg.className='hint ok';
+    }catch(e){
+      msg.textContent='Ошибка: '+e.message;
+      msg.className='hint error';
+    }
+  }
+  
   $('saveSettingsBtn').onclick=saveSettings;
   $('uploadBtn').onclick=uploadFiles;
   $('reloadBtn').onclick=loadFiles;
+  $('downloadDialogsBtn').onclick=downloadDialogs;
 
   (async ()=>{ await loadSettings(); await loadFiles(); })();
 })();

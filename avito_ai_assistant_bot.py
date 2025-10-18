@@ -34,6 +34,7 @@ import os
 import sqlite3
 import time
 import traceback
+from datetime import datetime
 from typing import Any, Dict, Optional, List
 
 import requests
@@ -48,6 +49,7 @@ load_dotenv()
 AVITO_BASE = os.getenv("AVITO_BASE_URL", "https://api.avito.ru")
 AVITO_CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 AVITO_CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
+AVITO_ACCOUNT_ID = (os.getenv("AVITO_ACCOUNT_ID") or "").strip()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSISTANT_ID = os.getenv("OPENAI_ASSISTANT_ID") or os.getenv("ASSISTANT_ID")
@@ -204,6 +206,30 @@ def avito_subscribe_webhook(url: str) -> Dict[str, Any]:
     r.raise_for_status()
     return r.json() if r.content else {}
 
+
+def avito_list_chats(account_id: str, *, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+    url = f"{AVITO_BASE}/messenger/v2/accounts/{account_id}/chats"
+    params = {
+        "limit": max(1, min(limit, 100)),
+        "offset": max(0, offset),
+        "chat_types": "u2i",
+    }
+    r = requests.get(url, headers=avito_headers(), params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def avito_list_messages(account_id: str, chat_id: str, *, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+    url = f"{AVITO_BASE}/messenger/v3/accounts/{account_id}/chats/{chat_id}/messages/"
+    params = {
+        "limit": max(1, min(limit, 100)),
+        "offset": max(0, offset),
+    }
+    r = requests.get(url, headers=avito_headers(), params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
+    
+    
 def avito_whoami() -> Dict[str, Any]:
     r = requests.get(f"{AVITO_BASE}/core/v1/accounts/self", headers=avito_headers(), timeout=20)
     r.raise_for_status()
@@ -295,6 +321,196 @@ from fastapi.responses import PlainTextResponse
 
 admin_api = APIRouter(prefix="/api/admin", tags=["admin"])
 
+
+def build_avito_dialogs_txt(account_id: str) -> str:
+    limit = 100
+
+    def _chat_title(chat: Dict[str, Any]) -> str:
+        title = chat.get("title")
+        if title:
+            return str(title)
+        context = chat.get("context")
+        if isinstance(context, dict):
+            value = context.get("value")
+            if isinstance(value, dict):
+                for key in ("title", "name"):
+                    if value.get(key):
+                        return str(value[key])
+            for key in ("title", "name"):
+                if context.get(key):
+                    return str(context[key])
+        elif isinstance(context, str):
+            return context
+        return ""
+
+    def _chat_item_url(chat: Dict[str, Any]) -> str:
+        item_id = chat.get("item_id") or chat.get("itemId")
+        if item_id:
+            return f"https://avito.ru/{item_id}"
+        context = chat.get("context")
+        if isinstance(context, dict):
+            value = context.get("value")
+            if isinstance(value, dict):
+                url = value.get("url")
+                if url:
+                    return str(url)
+                item_id = value.get("id") or value.get("item_id")
+                if item_id:
+                    return f"https://avito.ru/{item_id}"
+        return ""
+
+    def _chat_participants(chat: Dict[str, Any]) -> List[str]:
+        users = chat.get("users")
+        parts: List[str] = []
+        if isinstance(users, list):
+            for u in users:
+                if not isinstance(u, dict):
+                    continue
+                name = u.get("name") or u.get("user_name") or u.get("login")
+                if not name and u.get("id") is not None:
+                    name = f"user:{u['id']}"
+                if name:
+                    parts.append(str(name))
+        return parts
+
+    def _format_ts(value: Any) -> str:
+        if value in (None, ""):
+            return "—"
+        try:
+            return datetime.utcfromtimestamp(int(value)).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(value)
+
+    def _message_text(msg: Dict[str, Any]) -> str:
+        content = msg.get("content")
+        if isinstance(content, dict):
+            for key in ("text",):
+                if isinstance(content.get(key), str):
+                    return content[key]
+            message = content.get("message")
+            if isinstance(message, dict):
+                for key in ("text", "body", "description"):
+                    if isinstance(message.get(key), str):
+                        return message[key]
+            payload = content.get("payload")
+            if isinstance(payload, dict):
+                for key in ("text", "body"):
+                    if isinstance(payload.get(key), str):
+                        return payload[key]
+        if isinstance(content, str):
+            return content
+        if content is None:
+            return ""
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except Exception:
+            return str(content)
+
+    chats: List[Dict[str, Any]] = []
+    offset = 0
+    while True:
+        data = avito_list_chats(account_id, limit=limit, offset=offset)
+        batch = data.get("chats") or data.get("result") or []
+        if not isinstance(batch, list):
+            batch = []
+        chats.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+
+    lines: List[str] = []
+    lines.append(
+        f"Avito dialogs dump (account {account_id}) — generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    )
+    lines.append(f"Всего чатов: {len(chats)}")
+    lines.append("")
+
+    for chat in chats:
+        chat_id = chat.get("id") or chat.get("chat_id") or chat.get("chatId")
+        if not chat_id:
+            continue
+        chat_id = str(chat_id)
+        title = _chat_title(chat)
+        item_url = _chat_item_url(chat)
+        participants = _chat_participants(chat)
+
+        lines.append("=" * 80)
+        header = f"CHAT {chat_id}"
+        if title:
+            header += f" — {title}"
+        lines.append(header)
+        if item_url:
+            lines.append(f"Товар: {item_url}")
+        if participants:
+            lines.append("Участники: " + ", ".join(participants))
+
+        messages: List[Dict[str, Any]] = []
+        offset = 0
+        while True:
+            data = avito_list_messages(account_id, chat_id, limit=limit, offset=offset)
+            batch = data.get("messages") or data.get("result") or []
+            if not isinstance(batch, list):
+                batch = []
+            messages.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+
+        if not messages:
+            lines.append("(сообщений нет)")
+            lines.append("")
+            continue
+
+        def _msg_ts(msg: Dict[str, Any]) -> int:
+            ts = msg.get("created") or msg.get("timestamp") or msg.get("created_at")
+            try:
+                return int(ts)
+            except Exception:
+                return 0
+
+        messages.sort(key=_msg_ts)
+
+        for msg in messages:
+            ts = _format_ts(msg.get("created") or msg.get("timestamp") or msg.get("created_at"))
+            author = msg.get("author_id") or msg.get("user_id") or msg.get("authorId")
+            if author is None:
+                author = "?"
+            msg_type = msg.get("type") or msg.get("message_type") or "?"
+            direction = msg.get("direction")
+            mid = msg.get("id") or msg.get("message_id")
+            prefix_parts = [f"[{ts}]", f"id={mid}" if mid else None, f"author={author}", f"type={msg_type}"]
+            if direction:
+                prefix_parts.append(f"direction={direction}")
+            prefix = " ".join(part for part in prefix_parts if part)
+
+            text = _message_text(msg)
+            text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+            lines_text = text.split("\n") if text else [""]
+
+            first_line = lines_text[0] if lines_text else ""
+            if first_line:
+                lines.append(f"{prefix}: {first_line}")
+            else:
+                lines.append(prefix + (":" if prefix else ""))
+            for extra in lines_text[1:]:
+                lines.append("    " + extra)
+
+            attachments = msg.get("attachments")
+            if attachments:
+                try:
+                    attachments_str = json.dumps(attachments, ensure_ascii=False)
+                except Exception:
+                    attachments_str = str(attachments)
+                lines.append("    attachments: " + attachments_str)
+
+        lines.append("")
+
+    if not chats:
+        lines.append("Чаты не найдены или недоступны.")
+
+    return "\n".join(lines).strip() + "\n"
+    
+    
 def _get_assistant_obj():
     aid = ensure_assistant_id()
     try:
@@ -492,6 +708,28 @@ def inspect_file(file_id: str):
         print("[admin/files inspect] error:", traceback.format_exc())
         return JSONResponse({"detail": f"Inspect failed: {e}"}, status_code=500)
 
+
+@admin_api.get("/dialogs.txt", response_class=PlainTextResponse)
+def admin_download_dialogs_txt():
+    if not AVITO_ACCOUNT_ID:
+        raise HTTPException(status_code=400, detail="AVITO_ACCOUNT_ID is not configured")
+
+    try:
+        content = build_avito_dialogs_txt(AVITO_ACCOUNT_ID)
+    except requests.HTTPError as e:
+        status = e.response.status_code if getattr(e, "response", None) is not None else 502
+        detail = e.response.text if getattr(e, "response", None) is not None else str(e)
+        raise HTTPException(status_code=status, detail=f"Avito API error: {detail}")
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Avito request failed: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    filename = f"avito-dialogs-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.txt"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return PlainTextResponse(content, headers=headers)
+    
+    
 # Роутер админки
 app.include_router(admin_api)
 
