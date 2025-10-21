@@ -46,6 +46,7 @@
         <textarea id="instructions" placeholder="Инструкция ассистента..."></textarea>
         <div class="row" style="margin-top:10px;">
           <button id="saveSettingsBtn">Сохранить</button>
+          <button class="secondary" id="toggleBotBtn">...</button>
           <span class="hint" id="settingsMsg"></span>
         </div>
         <div class="hint" id="profileHint" style="margin-top:8px;"></div>
@@ -99,7 +100,23 @@
   const fmtBytes = (n)=> n!=null ? new Intl.NumberFormat('ru-RU').format(n) + ' B' : '—';
   const fmtDate  = (ts)=> ts ? new Date(ts*1000).toLocaleString() : '—';
 
-  let SETTINGS = { instructions:'', vector_store_id:null, assistant_id:null };
+  let SETTINGS = { instructions:'', vector_store_id:null, assistant_id:null, bot_enabled:true };
+
+  function refreshProfileHint(){
+    const parts = [];
+    parts.push('Vector Store: ' + (SETTINGS.vector_store_id || 'не настроен'));
+    if (SETTINGS.assistant_id) parts.push('Assistant: ' + SETTINGS.assistant_id);
+    parts.push('Бот: ' + (SETTINGS.bot_enabled ? 'включен' : 'выключен'));
+    $('profileHint').textContent = parts.join(' · ');
+    $('profileHint').className = SETTINGS.bot_enabled ? 'hint' : 'hint error';
+  }
+
+  function updateBotButton(){
+    const btn = $('toggleBotBtn');
+    if(!btn) return;
+    btn.textContent = SETTINGS.bot_enabled ? 'Выключить бота' : 'Включить бота';
+    btn.className = SETTINGS.bot_enabled ? 'secondary' : '';
+  }
 
   async function jsonFetch(url, opts) {
     const r = await fetch(url, opts);
@@ -116,13 +133,17 @@
       SETTINGS.instructions    = s.instructions || '';
       SETTINGS.vector_store_id = s.vector_store_id || s.vectorStoreId || null;
       SETTINGS.assistant_id    = s.assistant_id || s.assistantId || null;
+      if ('bot_enabled' in s) {
+        SETTINGS.bot_enabled = !!s.bot_enabled;
+      } else if ('botEnabled' in s) {
+        SETTINGS.bot_enabled = !!s.botEnabled;
+      } else {
+        SETTINGS.bot_enabled = true;
+      }
 
       $('instructions').value = SETTINGS.instructions;
-      const parts = [];
-      parts.push('Vector Store: ' + (SETTINGS.vector_store_id || 'не настроен'));
-      if (SETTINGS.assistant_id) parts.push('Assistant: ' + SETTINGS.assistant_id);
-      $('profileHint').textContent = parts.join(' · ');
-      $('profileHint').className = 'hint';
+      refreshProfileHint();
+      updateBotButton();
     }catch(e){
       $('settingsMsg').textContent='Ошибка: '+e.message;
       $('settingsMsg').className='hint error';
@@ -133,7 +154,11 @@
     $('settingsMsg').textContent='';
     try{
       const instructions = $('instructions').value||'';
-      await jsonFetch(API+'/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({instructions})});
+      await jsonFetch(API+'/settings',{
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({instructions, bot_enabled: SETTINGS.bot_enabled})
+      });
       $('settingsMsg').textContent='Сохранено';
       $('settingsMsg').className='hint ok';
       SETTINGS.instructions = instructions;
@@ -143,6 +168,32 @@
     }
   }
 
+  async function toggleBot(){
+    const btn = $('toggleBotBtn');
+    if(!btn) return;
+    const nextState = !SETTINGS.bot_enabled;
+    btn.disabled = true;
+    $('settingsMsg').textContent='';
+    $('settingsMsg').className='hint';
+    try{
+      await jsonFetch(API+'/settings',{
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({bot_enabled: nextState})
+      });
+      SETTINGS.bot_enabled = nextState;
+      updateBotButton();
+      refreshProfileHint();
+      $('settingsMsg').textContent = nextState ? 'Бот включен' : 'Бот выключен';
+      $('settingsMsg').className = nextState ? 'hint ok' : 'hint error';
+    }catch(e){
+      $('settingsMsg').textContent='Ошибка: '+e.message;
+      $('settingsMsg').className='hint error';
+    }finally{
+      btn.disabled = false;
+    }
+  }
+  
   // нормализация + мягкий клиентский фильтр (если бэк вернёт лишнее)
   function normalizeAndFilter(raw) {
     const vsId = SETTINGS.vector_store_id;
@@ -268,6 +319,7 @@
   $('uploadBtn').onclick=uploadFiles;
   $('reloadBtn').onclick=loadFiles;
   $('downloadDialogsBtn').onclick=downloadDialogs;
+  $('toggleBotBtn').onclick=toggleBot;
 
   (async ()=>{ await loadSettings(); await loadFiles(); })();
 })();

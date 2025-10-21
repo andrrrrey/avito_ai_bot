@@ -58,6 +58,7 @@ VECTOR_STORE_ID = (os.getenv("VECTOR_STORE_ID") or "").strip()
 REPLY_PREFIX = os.getenv("REPLY_PREFIX", "")
 ROOT_PATH = (os.getenv("ROOT_PATH") or "").rstrip("/")
 PORT = int(os.getenv("PORT", "8081"))
+BOT_ENABLED = (os.getenv("BOT_ENABLED") or "1").strip().lower() not in {"0", "false", "no", "off"}
 
 # Профиль продавца
 SELLER_PROFILE = os.getenv("SELLER_PROFILE")
@@ -527,21 +528,42 @@ def _ensure_vector_store() -> str:
 @admin_api.get("/settings")
 def admin_get_settings():
     a = _get_assistant_obj()
-    return {"instructions": (a.instructions or "")}
+    return {
+        "instructions": (a.instructions or ""),
+        "assistant_id": getattr(a, "id", None),
+        "vector_store_id": VECTOR_STORE_ID or None,
+        "bot_enabled": BOT_ENABLED,
+    }
 
 @admin_api.put("/settings")
 def admin_put_settings(payload: Dict[str, Any]):
-    instructions = (payload or {}).get("instructions", "")
-    aid = ensure_assistant_id()
-    try:
-        kwargs: Dict[str, Any] = {"instructions": instructions or ""}
-        if VECTOR_STORE_ID:
-            kwargs["tools"] = [{"type": "file_search"}]
-            kwargs["tool_resources"] = {"file_search": {"vector_store_ids": [VECTOR_STORE_ID]}}
-        openai_client.beta.assistants.update(assistant_id=aid, **kwargs)
-        return {"ok": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Assistant update failed: {e}")
+    global BOT_ENABLED
+    payload = payload or {}
+
+    response: Dict[str, Any] = {"ok": True}
+
+    if "bot_enabled" in payload:
+        val = payload.get("bot_enabled")
+        if isinstance(val, str):
+            BOT_ENABLED = val.strip().lower() not in {"0", "false", "no", "off"}
+        else:
+            BOT_ENABLED = bool(val)
+        response["bot_enabled"] = BOT_ENABLED
+
+    if "instructions" in payload:
+        instructions = payload.get("instructions") or ""
+        aid = ensure_assistant_id()
+        try:
+            kwargs: Dict[str, Any] = {"instructions": instructions}
+            if VECTOR_STORE_ID:
+                kwargs["tools"] = [{"type": "file_search"}]
+                kwargs["tool_resources"] = {"file_search": {"vector_store_ids": [VECTOR_STORE_ID]}}
+            openai_client.beta.assistants.update(assistant_id=aid, **kwargs)
+            response["instructions"] = instructions
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Assistant update failed: {e}")
+
+    return response
 
 # ===== ФАЙЛЫ (Vector Store или Files API) =====
 
@@ -749,6 +771,9 @@ async def avito_webhook(request: Request, background: BackgroundTasks):
     except Exception:
         return JSONResponse({"ok": True})
 
+    if not BOT_ENABLED:
+        return JSONResponse({"ok": True, "bot_enabled": False})
+        
     # Лог входящего события — полезно для отладки
     try:
         payload = data.get("payload") or {}
