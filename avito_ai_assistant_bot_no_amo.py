@@ -37,10 +37,6 @@ import traceback
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
-import re
-from pathlib import Path
-from urllib.parse import urlencode, urlparse
-
 import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Request
@@ -63,26 +59,6 @@ REPLY_PREFIX = os.getenv("REPLY_PREFIX", "")
 ROOT_PATH = (os.getenv("ROOT_PATH") or "").rstrip("/")
 PORT = int(os.getenv("PORT", "8081"))
 BOT_ENABLED = (os.getenv("BOT_ENABLED") or "1").strip().lower() not in {"0", "false", "no", "off"}
-PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or os.getenv("AMOCRM_PUBLIC_BASE_URL") or "").strip()
-WEBHOOK_URL = (os.getenv("WEBHOOK_URL") or "").strip()
-if not PUBLIC_BASE_URL and WEBHOOK_URL:
-    parsed_webhook = urlparse(WEBHOOK_URL)
-    if parsed_webhook.scheme and parsed_webhook.netloc:
-        PUBLIC_BASE_URL = f"{parsed_webhook.scheme}://{parsed_webhook.netloc}"
-PUBLIC_BASE_URL = PUBLIC_BASE_URL.rstrip("/")
-
-# AmoCRM credentials
-AMOCRM_BASE_URL = (os.getenv("AMOCRM_BASE_URL") or "").rstrip("/")
-AMOCRM_CLIENT_ID = (os.getenv("AMOCRM_CLIENT_ID") or "").strip()
-AMOCRM_CLIENT_SECRET = (os.getenv("AMOCRM_CLIENT_SECRET") or "").strip()
-DEFAULT_AMOCRM_REDIRECT_PATH = "/amocrm/oauth/callback"
-AMOCRM_REDIRECT_URI = (os.getenv("AMOCRM_REDIRECT_URI") or "").strip()
-AMOCRM_ACCESS_TOKEN = (os.getenv("AMOCRM_ACCESS_TOKEN") or "").strip()
-AMOCRM_REFRESH_TOKEN = (os.getenv("AMOCRM_REFRESH_TOKEN") or "").strip()
-AMOCRM_PIPELINE_ID = (os.getenv("AMOCRM_PIPELINE_ID") or "").strip()
-AMOCRM_STATUS_ID = (os.getenv("AMOCRM_STATUS_ID") or "").strip()
-AMOCRM_RESPONSIBLE_USER_ID = (os.getenv("AMOCRM_RESPONSIBLE_USER_ID") or "").strip()
-AMOCRM_TOKEN_FILE = (os.getenv("AMOCRM_TOKEN_FILE") or "").strip() or os.path.join(os.path.dirname(__file__), "amocrm_token.json")
 
 # Профиль продавца
 SELLER_PROFILE = os.getenv("SELLER_PROFILE")
@@ -188,320 +164,6 @@ def get_or_create_thread(chat_id: str) -> str:
 
 _token: Dict[str, Any] = {"access_token": None, "exp": 0}
 
-# ---------- AmoCRM auth & API ----------
-
-
-def _load_amocrm_tokens_from_file() -> Dict[str, Any]:
-    path = Path(AMOCRM_TOKEN_FILE) if AMOCRM_TOKEN_FILE else None
-    if not path:
-        return {}
-    try:
-        if not path.exists():
-            return {}
-        with path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-            if isinstance(data, dict):
-                return data
-    except Exception as exc:
-        print(f"[amocrm] token file load error: {exc}")
-    return {}
-
-
-def _init_amocrm_token_state() -> Dict[str, Any]:
-    stored = _load_amocrm_tokens_from_file()
-    token_state: Dict[str, Any] = {
-        "access_token": stored.get("access_token"),
-        "refresh_token": stored.get("refresh_token"),
-        "exp": 0,
-    }
-    expires_at = stored.get("expires_at")
-    if isinstance(expires_at, (int, float)) and expires_at > 0:
-        token_state["exp"] = float(expires_at)
-
-    if AMOCRM_ACCESS_TOKEN:
-        token_state["access_token"] = AMOCRM_ACCESS_TOKEN
-    if AMOCRM_REFRESH_TOKEN:
-        token_state["refresh_token"] = AMOCRM_REFRESH_TOKEN
-
-    return token_state
-
-
-_amocrm_token: Dict[str, Any] = _init_amocrm_token_state()
-
-
-def amocrm_resolve_redirect_uri() -> str:
-    if AMOCRM_REDIRECT_URI:
-        return AMOCRM_REDIRECT_URI
-    if PUBLIC_BASE_URL:
-        return f"{PUBLIC_BASE_URL}{DEFAULT_AMOCRM_REDIRECT_PATH}"
-    return ""
-
-
-def _amocrm_save_tokens() -> None:
-    path = Path(AMOCRM_TOKEN_FILE) if AMOCRM_TOKEN_FILE else None
-    if not path:
-        return
-    payload = {
-        "access_token": _amocrm_token.get("access_token"),
-        "refresh_token": _amocrm_token.get("refresh_token"),
-        "expires_at": _amocrm_token.get("exp", 0) or 0,
-    }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        print(f"[amocrm] token file save error: {exc}")
-
-
-def _amocrm_update_tokens(*, access_token: Optional[str], refresh_token: Optional[str], expires_in: Optional[int] = None, expires_at: Optional[float] = None) -> Optional[str]:
-    if access_token:
-        _amocrm_token["access_token"] = access_token
-    if refresh_token:
-        _amocrm_token["refresh_token"] = refresh_token
-    if expires_at is not None:
-        _amocrm_token["exp"] = float(expires_at)
-    elif expires_in is not None:
-        try:
-            _amocrm_token["exp"] = time.time() + int(expires_in)
-        except Exception:
-            _amocrm_token["exp"] = 0
-    _amocrm_save_tokens()
-    return _amocrm_token.get("access_token")
-
-
-def amocrm_credentials_available() -> bool:
-    return bool(AMOCRM_BASE_URL and AMOCRM_CLIENT_ID and AMOCRM_CLIENT_SECRET)
-
-
-def amocrm_configured() -> bool:
-    return bool(
-        amocrm_credentials_available()
-        and (_amocrm_token.get("refresh_token") or _amocrm_token.get("access_token"))
-    )
-
-
-def amocrm_build_authorization_url(state: str = "avito-bot") -> str:
-    if not amocrm_credentials_available():
-        raise RuntimeError("AmoCRM credentials are not fully configured")
-    params = {
-        "client_id": AMOCRM_CLIENT_ID,
-        "state": state,
-        "mode": "post_message",
-    }
-    redirect_uri = amocrm_resolve_redirect_uri()
-    if redirect_uri:
-        params["redirect_uri"] = redirect_uri
-    return f"https://www.amocrm.ru/oauth?{urlencode(params)}"
-
-
-def amocrm_exchange_authorization_code(code: str) -> Optional[Dict[str, Any]]:
-    if not amocrm_credentials_available():
-        raise RuntimeError("AmoCRM credentials are not fully configured")
-    payload: Dict[str, Any] = {
-        "client_id": AMOCRM_CLIENT_ID,
-        "client_secret": AMOCRM_CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-    }
-    redirect_uri = amocrm_resolve_redirect_uri()
-    if redirect_uri:
-        payload["redirect_uri"] = redirect_uri
-    try:
-        resp = requests.post(
-            f"{AMOCRM_BASE_URL}/oauth2/access_token",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=20,
-        )
-        resp.raise_for_status()
-        data = resp.json() if resp.content else {}
-    except Exception as exc:
-        print("[amocrm] authorization_code exchange error:", exc)
-        return None
-
-    access_token = data.get("access_token")
-    refresh_token = data.get("refresh_token")
-    expires_in = data.get("expires_in")
-    expires_at = None
-    if "expires_at" in data:
-        expires_at = data.get("expires_at")
-    _amocrm_update_tokens(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        expires_in=int(expires_in) if expires_in is not None else None,
-        expires_at=float(expires_at) if isinstance(expires_at, (int, float)) else None,
-    )
-    return data
-
-
-def amocrm_refresh_access_token() -> Optional[str]:
-    if not amocrm_configured() or not _amocrm_token["refresh_token"]:
-        return None
-    try:
-        payload = {
-            "grant_type": "refresh_token",
-            "client_id": AMOCRM_CLIENT_ID,
-            "client_secret": AMOCRM_CLIENT_SECRET,
-            "refresh_token": _amocrm_token["refresh_token"],
-        }
-        redirect_uri = amocrm_resolve_redirect_uri()
-        if redirect_uri:
-            payload["redirect_uri"] = redirect_uri
-        r = requests.post(
-            f"{AMOCRM_BASE_URL}/oauth2/access_token",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json() if r.content else {}
-        access_token = data.get("access_token")
-        refresh_token = data.get("refresh_token") or _amocrm_token.get("refresh_token")
-        expires_in = data.get("expires_in")
-        expires_at = data.get("expires_at") if isinstance(data, dict) else None
-        return _amocrm_update_tokens(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_in=int(expires_in) if expires_in is not None else None,
-            expires_at=float(expires_at) if isinstance(expires_at, (int, float)) else None,
-        )
-    except Exception as e:
-        print("[amocrm] token refresh error:", e)
-        return None
-
-
-def amocrm_access_token() -> Optional[str]:
-    if not amocrm_configured():
-        return None
-    now = time.time()
-    access_token = _amocrm_token.get("access_token")
-    if access_token and _amocrm_token.get("exp", 0) - now > 60:
-        return access_token
-    if access_token and not _amocrm_token.get("refresh_token"):
-        return access_token
-    if access_token and not _amocrm_token.get("exp"):
-        # токен задан вручную и нет информации об exp — используем как есть
-        return access_token
-    return amocrm_refresh_access_token()
-
-
-def amocrm_headers() -> Optional[Dict[str, str]]:
-    token = amocrm_access_token()
-    if not token:
-        return None
-    return {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-
-
-CONTACT_PHONE_RE = re.compile(r"(?:(?:\+|8)\s*(?:\(\s*\d{3}\s*\)|\d{3})|\+?\d)[\d\s\-()]{5,}\d")
-CONTACT_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-
-
-def extract_contacts(text: str) -> Dict[str, List[str]]:
-    phones = []
-    emails = []
-    if not text:
-        return {"phones": phones, "emails": emails}
-    for match in CONTACT_PHONE_RE.finditer(text):
-        cleaned = re.sub(r"[\s()-]", "", match.group())
-        if cleaned not in phones:
-            phones.append(cleaned)
-    for match in CONTACT_EMAIL_RE.finditer(text):
-        value = match.group().lower()
-        if value not in emails:
-            emails.append(value)
-    return {"phones": phones, "emails": emails}
-
-
-def amocrm_create_lead(chat_id: str, buyer_text: str, contacts: Dict[str, List[str]], item_id: Optional[Any] = None) -> None:
-    if not amocrm_configured():
-        return
-    headers = amocrm_headers()
-    if not headers:
-        print("[amocrm] skip lead creation: no access token")
-        return
-
-    lead_name = f"Avito чат {chat_id}" if chat_id else "Avito чат"
-    lead_payload: Dict[str, Any] = {
-        "name": lead_name,
-    }
-    if AMOCRM_PIPELINE_ID:
-        try:
-            lead_payload["pipeline_id"] = int(AMOCRM_PIPELINE_ID)
-        except ValueError:
-            lead_payload["pipeline_id"] = AMOCRM_PIPELINE_ID
-    if AMOCRM_STATUS_ID:
-        try:
-            lead_payload["status_id"] = int(AMOCRM_STATUS_ID)
-        except ValueError:
-            lead_payload["status_id"] = AMOCRM_STATUS_ID
-    if AMOCRM_RESPONSIBLE_USER_ID:
-        try:
-            lead_payload["responsible_user_id"] = int(AMOCRM_RESPONSIBLE_USER_ID)
-        except ValueError:
-            lead_payload["responsible_user_id"] = AMOCRM_RESPONSIBLE_USER_ID
-
-    try:
-        r = requests.post(
-            f"{AMOCRM_BASE_URL}/api/v4/leads",
-            headers=headers,
-            json=[lead_payload],
-            timeout=20,
-        )
-        r.raise_for_status()
-    except Exception as e:
-        print("[amocrm] create lead error:", e)
-        return
-
-    try:
-        data = r.json()
-        embedded = data.get("_embedded") if isinstance(data, dict) else None
-        lead_list = embedded.get("leads") if isinstance(embedded, dict) else None
-        lead_id = None
-        if isinstance(lead_list, list) and lead_list:
-            lead = lead_list[0]
-            lead_id = lead.get("id")
-    except Exception:
-        lead_id = None
-
-    note_lines = ["Контакты клиента из Авито чата:"]
-    if contacts.get("phones"):
-        note_lines.append("Телефоны: " + ", ".join(contacts["phones"]))
-    if contacts.get("emails"):
-        note_lines.append("Emails: " + ", ".join(contacts["emails"]))
-    if item_id:
-        note_lines.append(f"Объявление: https://avito.ru/{item_id}")
-    note_lines.append("Фрагмент сообщения:")
-    note_lines.append(buyer_text)
-    note_text = "\n".join(note_lines)
-
-    if lead_id is None:
-        print("[amocrm] lead created but id unknown, skip note")
-        return
-
-    try:
-        note_payload = [
-            {
-                "note_type": "common",
-                "params": {"text": note_text[:4096]},
-            }
-        ]
-        resp = requests.post(
-            f"{AMOCRM_BASE_URL}/api/v4/leads/{lead_id}/notes",
-            headers=headers,
-            json=note_payload,
-            timeout=20,
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        print("[amocrm] add note error:", e)
-        return
-
-    print(f"[amocrm] lead created: {lead_id}")
-    
 def avito_token() -> str:
     now = time.time()
     if _token["access_token"] and _token["exp"] - now > 60:
@@ -1089,55 +751,6 @@ def admin_download_dialogs_txt():
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return PlainTextResponse(content, headers=headers)
     
-
-# ---------- AmoCRM OAuth callback ----------
-
-
-@app.get(DEFAULT_AMOCRM_REDIRECT_PATH, response_class=PlainTextResponse)
-async def amocrm_oauth_callback(
-    code: Optional[str] = None,
-    state: Optional[str] = None,
-    error: Optional[str] = None,
-    error_description: Optional[str] = None,
-):
-    if error:
-        message = f"OAuth error: {error}"
-        if error_description:
-            message += f" — {error_description}"
-        return PlainTextResponse(message, status_code=400)
-
-    if not code:
-        return PlainTextResponse("Missing ?code parameter in callback", status_code=400)
-
-    if not amocrm_credentials_available():
-        return PlainTextResponse(
-            "AmoCRM credentials are not configured. Check AMOCRM_BASE_URL/CLIENT_ID/CLIENT_SECRET.",
-            status_code=500,
-        )
-
-    data = amocrm_exchange_authorization_code(code)
-    if not data:
-        return PlainTextResponse("Failed to exchange authorization code. See server logs for details.", status_code=502)
-
-    saved_to = AMOCRM_TOKEN_FILE or ""
-    message_lines = ["✅ AmoCRM tokens received."]
-    if saved_to:
-        message_lines.append(f"Tokens saved to: {saved_to}")
-    if state:
-        message_lines.append(f"state={state}")
-    access_masked = data.get("access_token")
-    refresh_masked = data.get("refresh_token")
-    if isinstance(access_masked, str) and len(access_masked) > 8:
-        access_masked = access_masked[:4] + "…" + access_masked[-4:]
-    if isinstance(refresh_masked, str) and len(refresh_masked) > 8:
-        refresh_masked = refresh_masked[:4] + "…" + refresh_masked[-4:]
-    if access_masked:
-        message_lines.append(f"access_token: {access_masked}")
-    if refresh_masked:
-        message_lines.append(f"refresh_token: {refresh_masked}")
-    message_lines.append("You can close this tab and return to the bot.")
-    return PlainTextResponse("\n".join(message_lines))
-    
     
 # Роутер админки
 app.include_router(admin_api)
@@ -1200,10 +813,6 @@ async def avito_webhook(request: Request, background: BackgroundTasks):
             if not buyer_text:
                 return
 
-            contacts = extract_contacts(buyer_text)
-            if contacts.get("phones") or contacts.get("emails"):
-                amocrm_create_lead(chat_id, buyer_text, contacts, item_id=item_id)
-                
             # минимальный контекст объявления (если есть item_id)
             ctx = None
             if item_id:
@@ -1230,42 +839,11 @@ def cmd_subscribe(url: str):
 def cmd_whoami():
     print(json.dumps(avito_whoami(), ensure_ascii=False, indent=2))
 
-def cmd_amocrm_auth_url(state: str):
-    try:
-        url = amocrm_build_authorization_url(state=state)
-    except Exception as exc:
-        print(f"[amocrm] cannot build auth url: {exc}")
-        return
-    redirect_hint = amocrm_resolve_redirect_uri()
-    if redirect_hint:
-        print(f"[amocrm] redirect_uri: {redirect_hint}")
-    else:
-        print(
-            "[amocrm] WARNING: redirect_uri is empty. Set PUBLIC_BASE_URL or AMOCRM_REDIRECT_URI so AmoCRM "
-            f"can call back {DEFAULT_AMOCRM_REDIRECT_PATH}"
-        )
-    print("[amocrm] Open the following URL in a browser and authorize the integration:")
-    print(url)
-
-
-def cmd_amocrm_exchange_code(code: str):
-    data = amocrm_exchange_authorization_code(code)
-    if data is None:
-        print("{}")
-        return
-    print(json.dumps(data, ensure_ascii=False, indent=2))
-    if AMOCRM_TOKEN_FILE:
-        print(f"[amocrm] tokens saved to {AMOCRM_TOKEN_FILE}")
-        
-        
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--serve", action="store_true", help="Запустить HTTP-сервер (FastAPI/uvicorn)")
     parser.add_argument("--subscribe", metavar="URL", help="Подписать Avito webhook на URL")
     parser.add_argument("--whoami", action="store_true", help="Проверка /core/v1/accounts/self")
-    parser.add_argument("--amocrm-auth-url", action="store_true", help="Вывести OAuth ссылку для получения authorization code")
-    parser.add_argument("--amocrm-state", default="avito-bot", help="Значение параметра state для OAuth ссылки")
-    parser.add_argument("--amocrm-exchange-code", metavar="CODE", help="Обмен authorization code AmoCRM на токены доступа")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=PORT)
     args = parser.parse_args()
@@ -1274,10 +852,6 @@ def main():
         cmd_subscribe(args.subscribe); return
     if args.whoami:
         cmd_whoami(); return
-    if args.amocrm_auth_url:
-        cmd_amocrm_auth_url(args.amocrm_state); return
-    if args.amocrm_exchange_code:
-        cmd_amocrm_exchange_code(args.amocrm_exchange_code); return
     if args.serve:
         import uvicorn
         uvicorn.run("avito_ai_assistant_bot:app",
@@ -1286,56 +860,6 @@ def main():
         return
 
     parser.print_help()
-
-# ---------- amoCRM OAuth callback ----------
-from fastapi.responses import PlainTextResponse, RedirectResponse
-
-@app.get("/amocrm/oauth/callback")
-async def amocrm_callback(request: Request):
-    """
-    Обрабатывает редирект из amoCRM: получает code и обменивает на токены.
-    """
-    code = request.query_params.get("code")
-    if not code:
-        return PlainTextResponse("Missing code", status_code=400)
-
-    payload = {
-        "client_id": AMOCRM_CLIENT_ID,
-        "client_secret": AMOCRM_CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": AMOCRM_REDIRECT_URI or "https://novikov.futuguru.com/admin/amocrm/oauth/callback",
-    }
-
-    try:
-        r = requests.post(
-            f"{AMOCRM_BASE_URL}/oauth2/access_token",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json()
-        refresh_token = data.get("refresh_token")
-        access_token = data.get("access_token")
-        text = f"✅ OK\n\nrefresh_token={refresh_token}\n\naccess_token={access_token}"
-        return PlainTextResponse(text)
-    except Exception as e:
-        return PlainTextResponse(f"Token exchange failed: {e}", status_code=500)
-
-
-# alias — чтобы снаружи /admin/amocrm/... попадал на этот же коллбек
-@app.get("/admin/amocrm/oauth/callback")
-async def amocrm_callback_alias(code: str | None = None, state: str | None = None,
-                                error: str | None = None, error_description: str | None = None):
-    qs = []
-    if code: qs.append(f"code={code}")
-    if state: qs.append(f"state={state}")
-    if error: qs.append(f"error={error}")
-    if error_description: qs.append(f"error_description={error_description}")
-    suffix = ("?" + "&".join(qs)) if qs else ""
-    return RedirectResponse(url="/amocrm/oauth/callback" + suffix)
-
 
 if __name__ == "__main__":
     main()
