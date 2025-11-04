@@ -141,6 +141,18 @@ sudo journalctl -u avito-bot -f --no-pager
    * `PUBLIC_BASE_URL` — это только домен (со схемой `https://`), без путей. Например, если webhook работает по адресу `https://novikov.futuguru.com/admin/avito-webhook`, то базовый URL будет `https://novikov.futuguru.com`.
    * Если `PUBLIC_BASE_URL` не указан, бот возьмёт домен из `WEBHOOK_URL` и построит redirect автоматически. Укажите `AMOCRM_REDIRECT_URI` вручную, только если редирект должен идти на другой домен.
 3. **Перезапустите бота** и откройте OAuth-ссылку: `python avito_ai_assistant_bot.py --amocrm-auth-url`. В консоли будет указан redirect_uri и ссылка на авторизацию.
+Либо сделайте это командой
+
+curl -X POST "https://________.amocrm.ru/oauth2/access_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "____",
+    "client_secret": "<твой_client_secret>",
+    "grant_type": "authorization_code",
+    "code": "________",
+    "redirect_uri": "https://_____.futuguru.com/admin/amocrm/oauth/callback"
+  }'
+
 4. **Авторизуйтесь в браузере** под нужным аккаунтом AmoCRM. После подтверждения вы попадёте на `/amocrm/oauth/callback`, бот автоматически обменяет authorization code на access/refresh токены и сохранит их в `AMOCRM_TOKEN_FILE`.
 5. **Проверка**: если доступа к публичному домену нет, можно воспользоваться резервным CLI-методом — выполните шаг 3, но код из адресной строки скопируйте вручную и вызовите `python avito_ai_assistant_bot.py --amocrm-exchange-code <CODE>`.
 
