@@ -1,21 +1,24 @@
 # avito_ai_bot
 
-# 🤖 Avito AI Assistant Bot
+## 🤖 Avito AI Assistant Bot
 
-**Автоматический ИИ-ассистент для продавца на Авито**  
-Работает через **FastAPI + OpenAI Assistants API (gpt-4o-mini)** и подключён к **Avito Messenger Webhook**.  
-Поддерживает загрузку файлов в Vector Store, админ-панель и гибкую конфигурацию через `.env`.
+**Автоматический ИИ-ассистент для продавца на Авито**
+
+Работает через **FastAPI + OpenAI Assistants API (gpt-4o-mini)**
+и подключён к **Avito Messenger Webhook**.
+Поддерживает загрузку файлов в Vector Store, админ-панель
+и гибкую конфигурацию через `.env`.
 
 ---
 
 ## 🚀 Возможности
 
-- Принимает сообщения покупателей из Avito Messenger (через webhook)
-- Отвечает от имени продавца с помощью **OpenAI Assistants**
-- Сохраняет контекст диалогов в **SQLite (`threads.sqlite3`)**
-- Поддерживает **Vector Store** (file search) для инструкций и документов
-- Имеет **админ-панель** для редактирования инструкций и загрузки файлов
-- Быстрая смена ключей, ассистента и вебхука через `.env`
+* Принимает сообщения покупателей из **Avito Messenger (webhook)**
+* Отвечает от имени продавца с помощью **OpenAI Assistants**
+* Сохраняет контекст диалогов в **SQLite (`threads.sqlite3`)**
+* Поддерживает **Vector Store (file search)** для инструкций и документов
+* Имеет **админ-панель** для редактирования инструкций и загрузки файлов
+* Быстрая смена ключей, ассистента и вебхука через `.env`
 
 ---
 
@@ -32,7 +35,7 @@ cd avito_cash_cross
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U fastapi uvicorn requests python-dotenv "openai==1.*" python-multipart
-````
+```
 
 ---
 
@@ -63,8 +66,8 @@ PORT=8081
 REPLY_PREFIX=[Авито]
 ```
 
-> ⚠️ Не source’и `.env` напрямую в bash — значения с пробелами и скобками не поддерживаются.
-> Файл читается через `python-dotenv`.
+> ⚠️ Не выполняй `source .env` напрямую в bash — значения с пробелами и скобками не поддерживаются.
+> Файл читается автоматически через `python-dotenv`.
 
 ---
 
@@ -76,9 +79,9 @@ python3 avito_ai_assistant_bot.py --serve --host 127.0.0.1 --port 8081
 ```
 
 Админка будет доступна по адресу:
-`https://dev.futuguru.com/Cash-Cross/api/admin/settings`
-или
-`https://dev.futuguru.com/Cash-Cross/api/admin/files`
+
+* `https://dev.futuguru.com/Cash-Cross/api/admin/settings`
+* `https://dev.futuguru.com/Cash-Cross/api/admin/files`
 
 ---
 
@@ -121,51 +124,124 @@ sudo journalctl -u avito-bot -f --no-pager
 
 ---
 
-## 🧠 Админка
+## 🧠 Админка API
 
-| Endpoint                           | Описание                                    |
-| ---------------------------------- | ------------------------------------------- |
-| **GET `/api/admin/settings`**      | Получить инструкции ассистента              |
-| **PUT `/api/admin/settings`**      | Обновить инструкции напрямую в OpenAI       |
-| **GET `/api/admin/files`**         | Список файлов из Vector Store или Files API |
-| **POST `/api/admin/files`**        | Загрузить файлы                             |
-| **DELETE `/api/admin/files/{id}`** | Удалить файл                                |
-| **GET `/api/admin/files/{id}`**    | Проверить статус файла                      |
-
----
-
-## 🔐 Настройка интеграции AmoCRM
-
-1. **Создайте интеграцию в AmoCRM**: Настройки → Интеграции → Управление интеграциями → «Добавить интеграцию». Запишите `client_id` и `client_secret`, а в поле URL перенаправления укажите публичный адрес бота `https://<ваш-домен>/amocrm/oauth/callback`.
-2. **Заполните .env**: пропишите `AMOCRM_BASE_URL`, `AMOCRM_CLIENT_ID`, `AMOCRM_CLIENT_SECRET` и либо `PUBLIC_BASE_URL=https://<ваш-домен>`, либо полный `AMOCRM_REDIRECT_URI` (если домен отличается).
-   * `PUBLIC_BASE_URL` — это только домен (со схемой `https://`), без путей. Например, если webhook работает по адресу `https://novikov.futuguru.com/admin/avito-webhook`, то базовый URL будет `https://novikov.futuguru.com`.
-   * Если `PUBLIC_BASE_URL` не указан, бот возьмёт домен из `WEBHOOK_URL` и построит redirect автоматически. Укажите `AMOCRM_REDIRECT_URI` вручную, только если редирект должен идти на другой домен.
-3. **Перезапустите бота** и откройте OAuth-ссылку: `python avito_ai_assistant_bot.py --amocrm-auth-url`. В консоли будет указан redirect_uri и ссылка на авторизацию.
-Либо сделайте это командой
-
-curl -X POST "https://________.amocrm.ru/oauth2/access_token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "client_id": "____",
-    "client_secret": "<твой_client_secret>",
-    "grant_type": "authorization_code",
-    "code": "________",
-    "redirect_uri": "https://_____.futuguru.com/admin/amocrm/oauth/callback"
-  }'
-
-4. **Авторизуйтесь в браузере** под нужным аккаунтом AmoCRM. После подтверждения вы попадёте на `/amocrm/oauth/callback`, бот автоматически обменяет authorization code на access/refresh токены и сохранит их в `AMOCRM_TOKEN_FILE`.
-5. **Проверка**: если доступа к публичному домену нет, можно воспользоваться резервным CLI-методом — выполните шаг 3, но код из адресной строки скопируйте вручную и вызовите `python avito_ai_assistant_bot.py --amocrm-exchange-code <CODE>`.
-
-> После успешного обмена callback-страница покажет маскированные токены и путь к файлу с сохранёнными значениями. При необходимости эти токены также можно продублировать в `.env`.
+| Endpoint                         | Описание                              |
+| -------------------------------- | ------------------------------------- |
+| **GET /api/admin/settings**      | Получить инструкции ассистента        |
+| **PUT /api/admin/settings**      | Обновить инструкции напрямую в OpenAI |
+| **GET /api/admin/files**         | Список файлов из Vector Store         |
+| **POST /api/admin/files**        | Загрузить файлы                       |
+| **DELETE /api/admin/files/{id}** | Удалить файл                          |
+| **GET /api/admin/files/{id}**    | Проверить статус файла                |
 
 ---
 
-## 🔁 Переподписка вебхука (новый аккаунт Avito)
+## 🔐 Интеграция с AmoCRM
+
+### 1. Создай интеграцию в AmoCRM
+
+`Настройки → Интеграции → Управление интеграциями → Добавить интеграцию`
+Запиши `client_id` и `client_secret`.
+В поле **URL перенаправления** укажи:
+
+```
+https://<твой-домен>/admin/amocrm/oauth/callback
+```
+
+---
+
+### 2. Заполни `.env`
+
+```ini
+AMOCRM_BASE_URL=https://karlomaster.amocrm.ru
+AMOCRM_CLIENT_ID=abcd73f3-f7a5-4b7d-9cc5-54a395911114
+AMOCRM_CLIENT_SECRET=hdgZD8QfK0B9iCCJCVrwinMBapd2fyPwZ3grashuced0Zye13FEqJ1YjSWhNxRDx
+AMOCRM_REDIRECT_URI=https://novikov.futuguru.com/admin/amocrm/oauth/callback
+AMOCRM_TOKEN_FILE=/home/bots/avito_cash_cross/amocrm_token.json
+```
+
+Если домен отличается — укажи полный `AMOCRM_REDIRECT_URI`.
+`PUBLIC_BASE_URL` не обязателен, если домен совпадает с Avito webhook.
+
+---
+
+### 3. Получи новую ссылку авторизации
+
+```bash
+python avito_ai_assistant_bot.py --amocrm-auth-url
+```
+
+В консоли появится ссылка, например:
+
+```
+https://www.amocrm.ru/oauth?client_id=abcd...&redirect_uri=https%3A%2F%2Fnovikov.futuguru.com%2Fadmin%2Famocrm%2Foauth%2Fcallback
+```
+
+Открой её в браузере, авторизуй интеграцию и разреши доступ.
+
+---
+
+### 4. Заверши обмен токенов
+
+**Если callback-страница открылась** — бот сам сохранит `access_token` и `refresh_token`
+в файл `/home/bots/avito_cash_cross/amocrm_token.json`.
+
+**Если видишь 404 или redirect не сработал**, скопируй параметр `code` из адресной строки:
+
+```
+?code=def50200...&state=avito-bot
+```
+
+и выполни:
+
+```bash
+python avito_ai_assistant_bot.py --amocrm-exchange-code "def50200..."
+```
+
+В ответе появятся новые токены:
+
+```json
+{
+  "access_token": "eyJ0eXAiOi...",
+  "refresh_token": "def502009c1ad...",
+  "expires_in": 86400
+}
+```
+
+---
+
+### 5. Обнови `.env`
+
+```ini
+AMOCRM_ACCESS_TOKEN=
+AMOCRM_REFRESH_TOKEN=def502009c1ad...   # вставь новый токен целиком
+```
+
+Перезапусти сервис:
+
+```bash
+sudo systemctl restart avito-bot
+sudo journalctl -u avito-bot -f
+```
+
+После первого обращения к AmoCRM бот автоматически создаст файл
+`amocrm_token.json` и дальше будет сам обновлять токены раз в сутки.
+
+---
+
+### ⚠️ Важно
+
+* Каждый `refresh_token` **одноразовый**. После любого ручного `curl` или `--amocrm-exchange-code` предыдущий токен становится недействительным.
+* После успешного обмена **новый refresh_token нужно вписать в `.env`**.
+* Если бот работает корректно — **больше ничего вручную обновлять не нужно.**
+
+---
+
+## 🔁 Переподписка вебхука Avito
 
 Если поменял `AVITO_CLIENT_ID` / `AVITO_CLIENT_SECRET` / `AVITO_USER_ID`,
-обязательно **переподпиши webhook**.
-
-### 1. Получи токен
+обязательно переподпиши webhook:
 
 ```bash
 export $(grep -E '^(AVITO_CLIENT_ID|AVITO_CLIENT_SECRET|AVITO_USER_ID)=' .env | xargs)
@@ -175,28 +251,13 @@ AVITO_TOKEN=$(curl -sS -X POST "https://api.avito.ru/token" \
   --data "grant_type=client_credentials&client_id=${AVITO_CLIENT_ID}&client_secret=${AVITO_CLIENT_SECRET}" \
   | jq -r '.access_token')
 
-curl -sS "https://api.avito.ru/core/v1/accounts/self" \
-  -H "Authorization: Bearer $AVITO_TOKEN" | jq
-```
-
-### 2. Подпиши webhook
-
-```bash
 python3 avito_ai_assistant_bot.py --subscribe "https://dev.futuguru.com/Cash-Cross/avito-webhook"
-```
-
-### 3. Перезапусти сервис
-
-```bash
 sudo systemctl restart avito-bot
-sudo journalctl -u avito-bot -f --no-pager
 ```
 
 ---
 
-## 🧹 Очистка старых thread’ов и ассистента
-
-Если менялся `OPENAI_API_KEY`, `OPENAI_ASSISTANT_ID` или `VECTOR_STORE_ID`:
+## 🧹 Очистка старых thread’ов
 
 ```bash
 cd /home/bots/avito_cash_cross
@@ -247,15 +308,14 @@ curl -sS "https://api.avito.ru/messenger/v1/accounts/${AVITO_USER_ID}/chats?limi
 
 ## 💡 Советы
 
-* Все ключи (`OPENAI_API_KEY`, `OPENAI_ASSISTANT_ID`, `VECTOR_STORE_ID`)
-  редактируются **только в `.env`** → затем
+* Все ключи редактируются **только в `.env`**, потом:
 
   ```bash
   sudo systemctl restart avito-bot
   ```
-* Ошибка `"No thread found..."` → очисти `threads.sqlite3`.
-* Для тестов webhook используй одинарные кавычки `'...'`,
-  чтобы bash не ломал `!` внутри текста.
+* Ошибка “No thread found…” → очисти `threads.sqlite3`.
+* Не делай `curl`-refresh, если бот уже сам обновляет токены.
+* Для тестов webhook используй одинарные кавычки `'...'`, чтобы bash не ломал `!`.
 
 ---
 
@@ -269,6 +329,7 @@ curl -sS "https://api.avito.ru/messenger/v1/accounts/${AVITO_USER_ID}/chats?limi
    [reply] -> chat=... ok
    ```
 3. Через 1–3 секунды бот ответит в чате Авито.
+4. При первом обмене с AmoCRM появится файл `amocrm_token.json`.
 
 ---
 
@@ -282,4 +343,4 @@ Digital entrepreneur, AI-developer, product architect.
 
 **Бэкенд:** Python 3.12 + FastAPI + OpenAI SDK
 **Развёртывание:** systemd + nginx reverse proxy
-**Версия:** production 2025-10-15
+**Версия:** production 2025-11-10

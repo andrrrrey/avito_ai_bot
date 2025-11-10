@@ -26,6 +26,18 @@ Avito → FastAPI webhook → OpenAI Assistants → ответ в чат Ави�
   ROOT_PATH=/Cash-Cross
   PORT=8081
   REPLY_PREFIX="[Авито] "           # опционально
+
+  # AmoCRM:
+  AMOCRM_BASE_URL=https://<subdomain>.amocrm.ru
+  AMOCRM_CLIENT_ID=...
+  AMOCRM_CLIENT_SECRET=...
+  AMOCRM_REDIRECT_URI=https://<host>/admin/amocrm/oauth/callback
+  AMOCRM_ACCESS_TOKEN=
+  AMOCRM_REFRESH_TOKEN=<ваш refresh_token>
+  AMOCRM_PIPELINE_ID=...
+  AMOCRM_STATUS_ID=...
+  AMOCRM_RESPONSIBLE_USER_ID=...
+  AMOCRM_TOKEN_FILE=/home/bots/novikov_avito/amocrm_token.json
 """
 
 import argparse
@@ -38,13 +50,13 @@ from datetime import datetime
 from typing import Any, Dict, Optional, List
 
 import re
-from pathlib import Path
+from pathlib import Path as FsPath
 from urllib.parse import urlencode, urlparse
 
 import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 # ---------- env & constants ----------
 
@@ -82,7 +94,7 @@ AMOCRM_REFRESH_TOKEN = (os.getenv("AMOCRM_REFRESH_TOKEN") or "").strip()
 AMOCRM_PIPELINE_ID = (os.getenv("AMOCRM_PIPELINE_ID") or "").strip()
 AMOCRM_STATUS_ID = (os.getenv("AMOCRM_STATUS_ID") or "").strip()
 AMOCRM_RESPONSIBLE_USER_ID = (os.getenv("AMOCRM_RESPONSIBLE_USER_ID") or "").strip()
-AMOCRM_TOKEN_FILE = (os.getenv("AMOCRM_TOKEN_FILE") or "").strip() or os.path.join(os.path.dirname(__file__), "amocrm_token.json")
+AMOCRM_TOKEN_FILE = os.getenv("AMOCRM_TOKEN_FILE") or os.path.join(os.path.dirname(__file__), "amocrm_token.json")
 
 # Профиль продавца
 SELLER_PROFILE = os.getenv("SELLER_PROFILE")
@@ -190,9 +202,8 @@ _token: Dict[str, Any] = {"access_token": None, "exp": 0}
 
 # ---------- AmoCRM auth & API ----------
 
-
 def _load_amocrm_tokens_from_file() -> Dict[str, Any]:
-    path = Path(AMOCRM_TOKEN_FILE) if AMOCRM_TOKEN_FILE else None
+    path = FsPath(AMOCRM_TOKEN_FILE) if AMOCRM_TOKEN_FILE else None
     if not path:
         return {}
     try:
@@ -205,7 +216,6 @@ def _load_amocrm_tokens_from_file() -> Dict[str, Any]:
     except Exception as exc:
         print(f"[amocrm] token file load error: {exc}")
     return {}
-
 
 def _init_amocrm_token_state() -> Dict[str, Any]:
     stored = _load_amocrm_tokens_from_file()
@@ -225,9 +235,7 @@ def _init_amocrm_token_state() -> Dict[str, Any]:
 
     return token_state
 
-
 _amocrm_token: Dict[str, Any] = _init_amocrm_token_state()
-
 
 def amocrm_resolve_redirect_uri() -> str:
     if AMOCRM_REDIRECT_URI:
@@ -236,9 +244,8 @@ def amocrm_resolve_redirect_uri() -> str:
         return f"{PUBLIC_BASE_URL}{DEFAULT_AMOCRM_REDIRECT_PATH}"
     return ""
 
-
 def _amocrm_save_tokens() -> None:
-    path = Path(AMOCRM_TOKEN_FILE) if AMOCRM_TOKEN_FILE else None
+    path = FsPath(AMOCRM_TOKEN_FILE) if AMOCRM_TOKEN_FILE else None
     if not path:
         return
     payload = {
@@ -252,7 +259,6 @@ def _amocrm_save_tokens() -> None:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
     except Exception as exc:
         print(f"[amocrm] token file save error: {exc}")
-
 
 def _amocrm_update_tokens(*, access_token: Optional[str], refresh_token: Optional[str], expires_in: Optional[int] = None, expires_at: Optional[float] = None) -> Optional[str]:
     if access_token:
@@ -269,17 +275,14 @@ def _amocrm_update_tokens(*, access_token: Optional[str], refresh_token: Optiona
     _amocrm_save_tokens()
     return _amocrm_token.get("access_token")
 
-
 def amocrm_credentials_available() -> bool:
     return bool(AMOCRM_BASE_URL and AMOCRM_CLIENT_ID and AMOCRM_CLIENT_SECRET)
-
 
 def amocrm_configured() -> bool:
     return bool(
         amocrm_credentials_available()
         and (_amocrm_token.get("refresh_token") or _amocrm_token.get("access_token"))
     )
-
 
 def amocrm_build_authorization_url(state: str = "avito-bot") -> str:
     if not amocrm_credentials_available():
@@ -293,7 +296,6 @@ def amocrm_build_authorization_url(state: str = "avito-bot") -> str:
     if redirect_uri:
         params["redirect_uri"] = redirect_uri
     return f"https://www.amocrm.ru/oauth?{urlencode(params)}"
-
 
 def amocrm_exchange_authorization_code(code: str) -> Optional[Dict[str, Any]]:
     if not amocrm_credentials_available():
@@ -323,9 +325,7 @@ def amocrm_exchange_authorization_code(code: str) -> Optional[Dict[str, Any]]:
     access_token = data.get("access_token")
     refresh_token = data.get("refresh_token")
     expires_in = data.get("expires_in")
-    expires_at = None
-    if "expires_at" in data:
-        expires_at = data.get("expires_at")
+    expires_at = data.get("expires_at") if isinstance(data, dict) else None
     _amocrm_update_tokens(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -333,7 +333,6 @@ def amocrm_exchange_authorization_code(code: str) -> Optional[Dict[str, Any]]:
         expires_at=float(expires_at) if isinstance(expires_at, (int, float)) else None,
     )
     return data
-
 
 def amocrm_refresh_access_token() -> Optional[str]:
     if not amocrm_configured() or not _amocrm_token["refresh_token"]:
@@ -370,7 +369,6 @@ def amocrm_refresh_access_token() -> Optional[str]:
         print("[amocrm] token refresh error:", e)
         return None
 
-
 def amocrm_access_token() -> Optional[str]:
     if not amocrm_configured():
         return None
@@ -385,7 +383,6 @@ def amocrm_access_token() -> Optional[str]:
         return access_token
     return amocrm_refresh_access_token()
 
-
 def amocrm_headers() -> Optional[Dict[str, str]]:
     token = amocrm_access_token()
     if not token:
@@ -395,10 +392,8 @@ def amocrm_headers() -> Optional[Dict[str, str]]:
         "Content-Type": "application/json",
     }
 
-
 CONTACT_PHONE_RE = re.compile(r"(?:(?:\+|8)\s*(?:\(\s*\d{3}\s*\)|\d{3})|\+?\d)[\d\s\-()]{5,}\d")
 CONTACT_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-
 
 def extract_contacts(text: str) -> Dict[str, List[str]]:
     phones = []
@@ -415,7 +410,6 @@ def extract_contacts(text: str) -> Dict[str, List[str]]:
             emails.append(value)
     return {"phones": phones, "emails": emails}
 
-
 def amocrm_create_lead(chat_id: str, buyer_text: str, contacts: Dict[str, List[str]], item_id: Optional[Any] = None) -> None:
     if not amocrm_configured():
         return
@@ -424,10 +418,8 @@ def amocrm_create_lead(chat_id: str, buyer_text: str, contacts: Dict[str, List[s
         print("[amocrm] skip lead creation: no access token")
         return
 
-    lead_name = f"Avito чат {chat_id}" if chat_id else "Avito чат"
-    lead_payload: Dict[str, Any] = {
-        "name": lead_name,
-    }
+    lead_name = f"Avito чат {chat_id}" if chat_id else "Авито чат"
+    lead_payload: Dict[str, Any] = {"name": lead_name}
     if AMOCRM_PIPELINE_ID:
         try:
             lead_payload["pipeline_id"] = int(AMOCRM_PIPELINE_ID)
@@ -483,12 +475,7 @@ def amocrm_create_lead(chat_id: str, buyer_text: str, contacts: Dict[str, List[s
         return
 
     try:
-        note_payload = [
-            {
-                "note_type": "common",
-                "params": {"text": note_text[:4096]},
-            }
-        ]
+        note_payload = [{"note_type": "common", "params": {"text": note_text[:4096]}}]
         resp = requests.post(
             f"{AMOCRM_BASE_URL}/api/v4/leads/{lead_id}/notes",
             headers=headers,
@@ -501,7 +488,9 @@ def amocrm_create_lead(chat_id: str, buyer_text: str, contacts: Dict[str, List[s
         return
 
     print(f"[amocrm] lead created: {lead_id}")
-    
+
+# ---------- Avito API ----------
+
 def avito_token() -> str:
     now = time.time()
     if _token["access_token"] and _token["exp"] - now > 60:
@@ -545,30 +534,20 @@ def avito_subscribe_webhook(url: str) -> Dict[str, Any]:
     r.raise_for_status()
     return r.json() if r.content else {}
 
-
 def avito_list_chats(account_id: str, *, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
     url = f"{AVITO_BASE}/messenger/v2/accounts/{account_id}/chats"
-    params = {
-        "limit": max(1, min(limit, 100)),
-        "offset": max(0, offset),
-        "chat_types": "u2i",
-    }
+    params = {"limit": max(1, min(limit, 100)), "offset": max(0, offset), "chat_types": "u2i"}
     r = requests.get(url, headers=avito_headers(), params=params, timeout=20)
     r.raise_for_status()
     return r.json()
-
 
 def avito_list_messages(account_id: str, chat_id: str, *, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
     url = f"{AVITO_BASE}/messenger/v3/accounts/{account_id}/chats/{chat_id}/messages/"
-    params = {
-        "limit": max(1, min(limit, 100)),
-        "offset": max(0, offset),
-    }
+    params = {"limit": max(1, min(limit, 100)), "offset": max(0, offset)}
     r = requests.get(url, headers=avito_headers(), params=params, timeout=20)
     r.raise_for_status()
     return r.json()
-    
-    
+
 def avito_whoami() -> Dict[str, Any]:
     r = requests.get(f"{AVITO_BASE}/core/v1/accounts/self", headers=avito_headers(), timeout=20)
     r.raise_for_status()
@@ -628,8 +607,7 @@ def run_assistant_and_get_reply(chat_id: str, buyer_text: str, ctx: Optional[Dic
     if not reply:
         reply = "Спасибо! Сейчас уточню детали и вернусь с ответом."
 
-    import re
-    # Убираем метки источников вида  
+    # Убираем метки источников вида  【1:...】
     reply = re.sub(r"【\d+:[^】]+】", "", reply).strip()
 
     if REPLY_PREFIX:
@@ -643,23 +621,21 @@ db_init()
 from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(title="Avito AI Assistant Bot", root_path=ROOT_PATH or "")
 
-# CORS: чтобы браузерный preflight OPTIONS не отдавал 405
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # при желании сузить до своего домена
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- Admin API (settings + files/VS) ----------
+# ---------- Admin API ----------
 
-from fastapi import UploadFile, File, Path, HTTPException
+from fastapi import UploadFile, File, Path as FastAPIPath, HTTPException
 from fastapi import APIRouter
-from fastapi.responses import PlainTextResponse
 
 admin_api = APIRouter(prefix="/api/admin", tags=["admin"])
-
 
 def build_avito_dialogs_txt(account_id: str) -> str:
     limit = 100
@@ -825,12 +801,8 @@ def build_avito_dialogs_txt(account_id: str) -> str:
             text = _message_text(msg)
             text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
             lines_text = text.split("\n") if text else [""]
-
             first_line = lines_text[0] if lines_text else ""
-            if first_line:
-                lines.append(f"{prefix}: {first_line}")
-            else:
-                lines.append(prefix + (":" if prefix else ""))
+            lines.append(f"{prefix}: {first_line}" if first_line else (prefix + (":" if prefix else "")))
             for extra in lines_text[1:]:
                 lines.append("    " + extra)
 
@@ -848,8 +820,7 @@ def build_avito_dialogs_txt(account_id: str) -> str:
         lines.append("Чаты не найдены или недоступны.")
 
     return "\n".join(lines).strip() + "\n"
-    
-    
+
 def _get_assistant_obj():
     aid = ensure_assistant_id()
     try:
@@ -877,7 +848,6 @@ def admin_get_settings():
 def admin_put_settings(payload: Dict[str, Any]):
     global BOT_ENABLED
     payload = payload or {}
-
     response: Dict[str, Any] = {"ok": True}
 
     if "bot_enabled" in payload:
@@ -907,18 +877,9 @@ def admin_put_settings(payload: Dict[str, Any]):
 
 @admin_api.get("/files")
 def list_files():
-    """
-    Если задан VECTOR_STORE_ID — показываем файлы ИЗ VECTOR STORE
-    со статусом привязки (in_progress | completed | failed) и last_error.
-    Имя/размер/время берём из Files API только как метаданные.
-    Иначе — фоллбек на Files API (purpose=assistants).
-    """
     try:
         if VECTOR_STORE_ID and hasattr(openai_client.beta, "vector_stores"):
-            vs_list = openai_client.beta.vector_stores.files.list(
-                vector_store_id=VECTOR_STORE_ID,
-                limit=100  # максимум у API
-            )
+            vs_list = openai_client.beta.vector_stores.files.list(vector_store_id=VECTOR_STORE_ID, limit=100)
             rows = []
             for item in vs_list.data:
                 fid = getattr(item, "id", None) or getattr(item, "file_id", None)
@@ -941,14 +902,13 @@ def list_files():
                     "filename": filename,
                     "bytes": size_bytes,
                     "created_at": created_at,
-                    "status": vs_status,       # статус из Vector Store
-                    "last_error": last_error,  # если failed — будет подсказка
+                    "status": vs_status,
+                    "last_error": last_error,
                 })
 
             rows.sort(key=lambda x: (x.get("created_at") or 0), reverse=True)
             return {"data": rows}
 
-        # Фоллбек: список Files API (purpose=assistants)
         files = openai_client.files.list()
         rows = []
         for f in files.data:
@@ -969,11 +929,6 @@ def list_files():
 
 @admin_api.post("/files")
 async def upload_files(files: List[UploadFile] = File(...)):
-    """
-    Загружает файлы:
-      - если есть VECTOR_STORE_ID → в Vector Store (upload_and_poll)
-      - иначе → в Files API (purpose=assistants)
-    """
     try:
         if not files:
             return JSONResponse({"detail": "No files provided"}, status_code=400)
@@ -997,10 +952,7 @@ async def upload_files(files: List[UploadFile] = File(...)):
                     "last_error": getattr(fs, "last_error", None),
                 })
             else:
-                f = openai_client.files.create(
-                    file=(uf.filename, content),
-                    purpose="assistants",
-                )
+                f = openai_client.files.create(file=(uf.filename, content), purpose="assistants")
                 uploaded.append({"id": f.id, "filename": uf.filename, "target": "files"})
 
         return {"ok": True, "uploaded": uploaded}
@@ -1009,14 +961,11 @@ async def upload_files(files: List[UploadFile] = File(...)):
         return JSONResponse({"detail": f"Upload failed: {e}"}, status_code=500)
 
 @admin_api.delete("/files/{file_id}", response_class=PlainTextResponse)
-def delete_file(file_id: str = Path(..., description="OpenAI File ID")):
+def delete_file(file_id: str = FastAPIPath(..., description="OpenAI File ID")):
     try:
         if VECTOR_STORE_ID and hasattr(openai_client.beta, "vector_stores"):
             try:
-                openai_client.beta.vector_stores.files.delete(
-                    vector_store_id=VECTOR_STORE_ID,
-                    file_id=file_id,
-                )
+                openai_client.beta.vector_stores.files.delete(vector_store_id=VECTOR_STORE_ID, file_id=file_id)
             except Exception:
                 pass
         openai_client.files.delete(file_id)
@@ -1027,13 +976,9 @@ def delete_file(file_id: str = Path(..., description="OpenAI File ID")):
 
 @admin_api.get("/files/{file_id}")
 def inspect_file(file_id: str):
-    """
-    Диагностика: статус в Files API и в Vector Store (если есть).
-    """
     try:
         info: Dict[str, Any] = {"file_id": file_id}
 
-        # Files API
         try:
             f = openai_client.files.retrieve(file_id)
             info["files_api"] = {
@@ -1048,13 +993,9 @@ def inspect_file(file_id: str):
         except Exception as e:
             info["files_api_error"] = str(e)
 
-        # Vector Store link (если используется)
         if VECTOR_STORE_ID and hasattr(openai_client.beta, "vector_stores"):
             try:
-                vf = openai_client.beta.vector_stores.files.retrieve(
-                    vector_store_id=VECTOR_STORE_ID,
-                    file_id=file_id,
-                )
+                vf = openai_client.beta.vector_stores.files.retrieve(vector_store_id=VECTOR_STORE_ID, file_id=file_id)
                 info["vector_store"] = {
                     "id": vf.id,
                     "status": getattr(vf, "status", None),
@@ -1067,7 +1008,6 @@ def inspect_file(file_id: str):
     except Exception as e:
         print("[admin/files inspect] error:", traceback.format_exc())
         return JSONResponse({"detail": f"Inspect failed: {e}"}, status_code=500)
-
 
 @admin_api.get("/dialogs.txt", response_class=PlainTextResponse)
 def admin_download_dialogs_txt():
@@ -1088,10 +1028,8 @@ def admin_download_dialogs_txt():
     filename = f"avito-dialogs-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.txt"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return PlainTextResponse(content, headers=headers)
-    
 
 # ---------- AmoCRM OAuth callback ----------
-
 
 @app.get(DEFAULT_AMOCRM_REDIRECT_PATH, response_class=PlainTextResponse)
 async def amocrm_oauth_callback(
@@ -1137,8 +1075,23 @@ async def amocrm_oauth_callback(
         message_lines.append(f"refresh_token: {refresh_masked}")
     message_lines.append("You can close this tab and return to the bot.")
     return PlainTextResponse("\n".join(message_lines))
-    
-    
+
+# Алиас: внешний /admin/... → тот же коллбек
+@app.get("/admin/amocrm/oauth/callback")
+async def amocrm_callback_alias(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+):
+    qs = []
+    if code: qs.append(f"code={code}")
+    if state: qs.append(f"state={state}")
+    if error: qs.append(f"error={error}")
+    if error_description: qs.append(f"error_description={error_description}")
+    suffix = ("?" + "&".join(qs)) if qs else ""
+    return RedirectResponse(url=DEFAULT_AMOCRM_REDIRECT_PATH + suffix)
+
 # Роутер админки
 app.include_router(admin_api)
 
@@ -1148,11 +1101,6 @@ def health():
 
 @app.post("/avito-webhook")
 async def avito_webhook(request: Request, background: BackgroundTasks):
-    """
-    Avito messenger v3 webhook:
-    { id, timestamp, version, payload:{ type:"message", value:{...} } }
-    Отвечаем только на входящий текст от клиента (author_id != user_id).
-    """
     try:
         data = await request.json()
     except Exception:
@@ -1160,8 +1108,8 @@ async def avito_webhook(request: Request, background: BackgroundTasks):
 
     if not BOT_ENABLED:
         return JSONResponse({"ok": True, "bot_enabled": False})
-        
-    # Лог входящего события — полезно для отладки
+
+    # Лог входящего события
     try:
         payload = data.get("payload") or {}
         if payload.get("type") == "message":
@@ -1182,10 +1130,9 @@ async def avito_webhook(request: Request, background: BackgroundTasks):
             msg = payload.get("value") or {}
 
             chat_id = msg.get("chat_id")
-            user_id = msg.get("user_id")          # наш аккаунт
-            author_id = msg.get("author_id")      # отправитель (клиент)
-            msg_type = msg.get("type")            # "text", ...
-            chat_type = msg.get("chat_type")      # "u2i"/"u2u"
+            user_id = msg.get("user_id")
+            author_id = msg.get("author_id")
+            msg_type = msg.get("type")
             content = msg.get("content") or {}
             item_id = msg.get("item_id")
 
@@ -1203,15 +1150,14 @@ async def avito_webhook(request: Request, background: BackgroundTasks):
             contacts = extract_contacts(buyer_text)
             if contacts.get("phones") or contacts.get("emails"):
                 amocrm_create_lead(chat_id, buyer_text, contacts, item_id=item_id)
-                
-            # минимальный контекст объявления (если есть item_id)
+
+            # контекст объявления (если есть)
             ctx = None
             if item_id:
                 ctx = {"type": "item", "value": {"title": "", "price_string": "", "url": f"https://avito.ru/{item_id}"}}
 
             reply = run_assistant_and_get_reply(chat_id, buyer_text, ctx)
 
-            # отправляем ответ
             avito_send_text(user_id, chat_id, reply)
             print(f"[reply] -> chat={chat_id} ok")
 
@@ -1240,13 +1186,10 @@ def cmd_amocrm_auth_url(state: str):
     if redirect_hint:
         print(f"[amocrm] redirect_uri: {redirect_hint}")
     else:
-        print(
-            "[amocrm] WARNING: redirect_uri is empty. Set PUBLIC_BASE_URL or AMOCRM_REDIRECT_URI so AmoCRM "
-            f"can call back {DEFAULT_AMOCRM_REDIRECT_PATH}"
-        )
+        print("[amocrm] WARNING: redirect_uri is empty. Set PUBLIC_BASE_URL or AMOCRM_REDIRECT_URI so AmoCRM "
+              f"can call back {DEFAULT_AMOCRM_REDIRECT_PATH}")
     print("[amocrm] Open the following URL in a browser and authorize the integration:")
     print(url)
-
 
 def cmd_amocrm_exchange_code(code: str):
     data = amocrm_exchange_authorization_code(code)
@@ -1256,8 +1199,7 @@ def cmd_amocrm_exchange_code(code: str):
     print(json.dumps(data, ensure_ascii=False, indent=2))
     if AMOCRM_TOKEN_FILE:
         print(f"[amocrm] tokens saved to {AMOCRM_TOKEN_FILE}")
-        
-        
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--serve", action="store_true", help="Запустить HTTP-сервер (FastAPI/uvicorn)")
@@ -1286,56 +1228,6 @@ def main():
         return
 
     parser.print_help()
-
-# ---------- amoCRM OAuth callback ----------
-from fastapi.responses import PlainTextResponse, RedirectResponse
-
-@app.get("/amocrm/oauth/callback")
-async def amocrm_callback(request: Request):
-    """
-    Обрабатывает редирект из amoCRM: получает code и обменивает на токены.
-    """
-    code = request.query_params.get("code")
-    if not code:
-        return PlainTextResponse("Missing code", status_code=400)
-
-    payload = {
-        "client_id": AMOCRM_CLIENT_ID,
-        "client_secret": AMOCRM_CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": AMOCRM_REDIRECT_URI or "https://novikov.futuguru.com/admin/amocrm/oauth/callback",
-    }
-
-    try:
-        r = requests.post(
-            f"{AMOCRM_BASE_URL}/oauth2/access_token",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json()
-        refresh_token = data.get("refresh_token")
-        access_token = data.get("access_token")
-        text = f"✅ OK\n\nrefresh_token={refresh_token}\n\naccess_token={access_token}"
-        return PlainTextResponse(text)
-    except Exception as e:
-        return PlainTextResponse(f"Token exchange failed: {e}", status_code=500)
-
-
-# alias — чтобы снаружи /admin/amocrm/... попадал на этот же коллбек
-@app.get("/admin/amocrm/oauth/callback")
-async def amocrm_callback_alias(code: str | None = None, state: str | None = None,
-                                error: str | None = None, error_description: str | None = None):
-    qs = []
-    if code: qs.append(f"code={code}")
-    if state: qs.append(f"state={state}")
-    if error: qs.append(f"error={error}")
-    if error_description: qs.append(f"error_description={error_description}")
-    suffix = ("?" + "&".join(qs)) if qs else ""
-    return RedirectResponse(url="/amocrm/oauth/callback" + suffix)
-
 
 if __name__ == "__main__":
     main()
